@@ -19,8 +19,8 @@ st.set_page_config(
 )
 
 # --- CONFIGURACIÓN DE SEGURIDAD ---
-# Define aquí la contraseña para que solo tú (Angela) puedas ver el borrador y descargar.
-PASSWORD_ADMIN = "AngelaAdmin2026"  # <--- Cámbiala por una tuya
+# Escribe aquí la contraseña que usarás tú (Angela) para ver los borradores.
+PASSWORD_ADMIN = "Angela2026" 
 
 st.title("Levantamiento y validación de funciones")
 st.caption("Piloto · Funciones de prioridad crítica")
@@ -106,7 +106,7 @@ FRECUENCIAS = [
 
 BLOQUE_BANCARIO = [
     ("¿Desde qué banco(s) o portal(es) realiza los pagos de esta función?", BANCOS, True),
-    ("¿Qué número de cuenta (y tipo de cuenta) usa en cada banco o portal?", [], False), # Pregunta de texto libre
+    ("¿Qué número de cuenta (y tipo de cuenta) usa en cada banco o portal?", [], False),
     ("¿Qué canal usa con más frecuencia en cada banco/portal?", CANALES, True),
     ("¿Con qué frecuencia paga desde cada banco/portal?", FRECUENCIAS, True),
     ("¿Quién más tiene acceso o puede autorizar pagos en esas cuentas?", [
@@ -129,6 +129,8 @@ BLOQUE_BANCARIO = [
         "Solicito instrucción", OTRO, NO_SE,
     ], False),
 ]
+
+# ---------- Definición de todas las funciones ----------
 
 QUESTIONS = {
     "ZOOM — pago de facturas y COD": [
@@ -165,8 +167,205 @@ QUESTIONS = {
             "Otro procedimiento", "No existe un procedimiento definido", NO_SE,
         ], False),
     ] + BLOQUE_BANCARIO,
-    
-    # Puedes ir agregando las demás funciones aquí...
+
+    "Consolidado semanal de proveedores": [
+        ("¿Qué información utiliza para preparar el consolidado?", SOURCES, True),
+        ("¿Qué hace usted con esa información?", [
+            "Reúne los pagos pendientes en un solo listado",
+            "Revisa importes y datos de los proveedores",
+            "Organiza pagos por empresa, moneda o vencimiento",
+            "Calcula o modifica importes", OTRO,
+        ], True),
+        ("¿Quién recibe el consolidado para su aprobación?", [
+            "Gerencia o jefe", "Asistente administrativo", "Contabilidad",
+            "Otra persona", "No se envía para aprobación", NO_SE,
+        ], False),
+        ("¿Qué sucede después de enviar el consolidado?", [
+            "Recibo la aprobación y ejecuto los pagos",
+            "Otra persona ejecuta los pagos",
+            "Recibo cambios o instrucciones antes de pagar",
+            "No hago seguimiento", OTRO,
+        ], False),
+        ("¿El consolidado incluye fecha de vencimiento de cada pago?", [
+            "Sí, siempre", "A veces", "No", NO_SE,
+        ], False),
+        ("¿Los pagos se programan con anticipación o se pagan el día del vencimiento?", [
+            "Con días de anticipación", "El mismo día del vencimiento",
+            "Depende del proveedor", OTRO,
+        ], False),
+        ("¿Cómo deja constancia del trabajo realizado?", [
+            "Archivo Excel", "Correo electrónico", "Comprobantes bancarios",
+            "Sistema o plataforma", "No existe un registro específico", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Nómina quincenal — obreros y vigilantes": [
+        ("¿Qué actividad realiza usted en el proceso?", [
+            "Recibo la nómina preparada y realizo los pagos",
+            "Reviso la información y preparo los pagos",
+            "Calculo o preparo la nómina", "Realizo todo el proceso", OTRO,
+        ], False),
+        ("¿Quién le entrega o prepara la información?", [
+            "Asistente administrativo", "Recursos Humanos o responsable de personal",
+            "Contabilidad", "Gerencia o jefe", "Responsables de empresas o tiendas",
+            "Otra persona", NO_SE,
+        ], True),
+        ("¿Quién revisa o autoriza los importes antes de pagar?", AUTH, False),
+        ("¿Cómo se realizan los pagos?", [
+            "Transferencias bancarias", "Pagos en efectivo",
+            "Una combinación de ambos", OTRO,
+        ], False),
+        ("¿El pago de nómina se hace siempre por el mismo banco o cambia según el grupo?", [
+            "Siempre el mismo banco", "Cambia según el grupo/empresa",
+            "Varía mes a mes", NO_SE,
+        ], False),
+        ("¿Se usa archivo plano para cargar la nómina al banco? ¿Quién lo prepara?", [
+            "Sí, lo preparo yo", "Sí, lo prepara otra persona",
+            "No, se hace manual en el portal", NO_SE,
+        ], False),
+        ("Los pagos en efectivo, ¿quién los entrega físicamente y cómo se registra?", [
+            "Yo los entrego y firmo recibos", "Otra persona los entrega",
+            "No se maneja efectivo", OTRO,
+        ], False),
+        ("¿Qué comprobantes o registros conserva?", [
+            "Comprobantes bancarios", "Relación de pagos realizados",
+            "Nómina utilizada para el pago", "Recibos firmados", OTRO,
+            "No conservo un registro específico",
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Nómina quincenal — tiendas, condominio y empresas": [
+        ("¿Qué entidades o grupos incluye esta función?", [
+            "Personal de tiendas", "Personal de condominio", "Personal de Booch",
+            "Personal de Bufecorp", "Personal de Baringco", OTRO,
+        ], True),
+        ("¿Qué actividad realiza usted en el proceso?", [
+            "Recibo la nómina preparada y realizo los pagos",
+            "Reviso la información y preparo los pagos",
+            "Calculo o preparo la nómina", "Realizo todo el proceso", OTRO,
+        ], False),
+        ("¿Quién le entrega o prepara la información?", [
+            "Asistente administrativo", "Recursos Humanos o responsable de personal",
+            "Contabilidad", "Gerencia o jefe", "Responsables de empresas o tiendas",
+            "Otra persona", NO_SE,
+        ], True),
+        ("¿Quién revisa o autoriza los importes antes de pagar?", AUTH, False),
+        ("¿Cómo se realizan los pagos?", [
+            "Transferencias bancarias", "Pagos en efectivo",
+            "Una combinación de ambos", OTRO,
+        ], False),
+        ("¿El pago de nómina se hace siempre por el mismo banco o cambia según el grupo?", [
+            "Siempre el mismo banco", "Cambia según el grupo/empresa",
+            "Varía mes a mes", NO_SE,
+        ], False),
+        ("¿Se usa archivo plano para cargar la nómina al banco? ¿Quién lo prepara?", [
+            "Sí, lo preparo yo", "Sí, lo prepara otra persona",
+            "No, se hace manual en el portal", NO_SE,
+        ], False),
+        ("Los pagos en efectivo, ¿quién los entrega físicamente y cómo se registra?", [
+            "Yo los entrego y firmo recibos", "Otra persona los entrega",
+            "No se maneja efectivo", OTRO,
+        ], False),
+        ("¿Qué comprobantes o registros conserva?", [
+            "Comprobantes bancarios", "Relación de pagos realizados",
+            "Nómina utilizada para el pago", "Recibos firmados", OTRO,
+            "No conservo un registro específico",
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Pagos en línea — impuestos, condominios y servicios": [
+        ("¿Qué tipos de pagos realiza?", [
+            "Impuestos", "Condominios", "Servicios públicos", OTRO,
+        ], True),
+        ("¿Cómo recibe los datos para efectuar el pago?", [
+            "Factura o recibo", "Instrucciones del asistente administrativo",
+            "Instrucciones de gerencia o jefe", "Correo electrónico",
+            "Consulta directamente el portal correspondiente", OTRO,
+        ], True),
+        ("¿Quién autoriza que se realice el pago?", AUTH, False),
+        ("¿En qué portal o banco específico paga cada tipo? (impuestos / condominios / servicios)", [
+            "Portal de impuestos", "Portal del banco", "Portal del servicio",
+            "Transferencia desde banco", "Varía según el tipo", OTRO,
+        ], True),
+        ("¿Los vencimientos están calendarizados? ¿Quién mantiene ese calendario?", [
+            "Sí, yo lo mantengo", "Sí, otra persona lo mantiene",
+            "No hay calendario formal", NO_SE,
+        ], False),
+        ("Después de pagar, ¿qué hace con el comprobante?", [
+            "Lo imprime", "Lo guarda digitalmente", "Lo envía por correo",
+            "Lo entrega al asistente administrativo", "Lo adjunta en un sistema o portal", OTRO,
+        ], True),
+        ("¿Cómo controla que no quede un pago pendiente o vencido?", [
+            "Utilizo un calendario o listado de vencimientos",
+            "Reviso las facturas o recibos recibidos",
+            "Recibo recordatorios de otra persona",
+            "No llevo un control específico", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Pagos de compras de materiales": [
+        ("¿Qué recibe antes de realizar un pago?", [
+            "Factura del proveedor", "Solicitud de pago", "Orden de compra",
+            "Aprobación de gerencia o jefe", "Instrucciones del asistente administrativo", OTRO,
+        ], True),
+        ("¿Qué hace antes de pagar?", [
+            "Verifico el importe y los datos bancarios",
+            "Compruebo que la factura corresponda a la solicitud",
+            "Verifico que exista autorización",
+            "Recibo la instrucción y ejecuto el pago", OTRO,
+        ], True),
+        ("¿Quién autoriza el pago?", AUTH, False),
+        ("¿Cómo realiza el pago?", [
+            "Transferencia bancaria", "Pago en efectivo", OTRO,
+        ], False),
+        ("¿Se verifica la recepción de la mercancía antes de pagar?", [
+            "Sí, siempre", "A veces", "No, se paga contra factura",
+            "No, se paga contra orden de compra", NO_SE,
+        ], False),
+        ("¿Hay proveedores recurrentes? ¿Se les paga con la misma frecuencia?", [
+            "Sí, la mayoría son recurrentes", "No, son compras puntuales",
+            "Es variable", NO_SE,
+        ], False),
+        ("¿Qué hace con el comprobante?", [
+            "Lo envía al proveedor", "Lo envía al asistente administrativo",
+            "Lo archiva junto con la factura", "Lo guarda digitalmente",
+            "Realiza varias de estas acciones", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Recibos de pagos en divisas — Bufecorp y Booch": [
+        ("¿Qué hace exactamente en esta función?", [
+            "Preparo y emito recibos de pagos realizados",
+            "Registro pagos en un sistema",
+            "Verifico información para elaborar recibos",
+            "Recibo datos preparados por otra persona y genero los recibos", OTRO,
+        ], True),
+        ("¿Qué información utiliza para elaborar el recibo?", [
+            "Comprobante de pago", "Factura o documento de cobro",
+            "Información entregada por el asistente administrativo",
+            "Información de un sistema", OTRO,
+        ], True),
+        ("¿Quién entrega o confirma la información del pago?", [
+            "Asistente administrativo", "Gerencia o jefe", "Contabilidad",
+            "Otra persona", NO_SE,
+        ], False),
+        ("¿Quién recibe el recibo una vez emitido?", [
+            "Proveedor o beneficiario", "Asistente administrativo", "Contabilidad",
+            "Gerencia o jefe", "Otra persona", NO_SE,
+        ], True),
+        ("¿Se verifica que el pago en divisa ingresó a la cuenta antes de emitir el recibo?", [
+            "Sí, siempre", "A veces", "No, se emite con el comprobante",
+            NO_SE,
+        ], False),
+        ("¿Los recibos se emiten desde un sistema específico? ¿Quién tiene acceso?", [
+            "Sí, solo yo tengo acceso", "Sí, varias personas tienen acceso",
+            "No, se hacen manualmente", OTRO,
+        ], False),
+        ("¿Dónde conserva el recibo y sus soportes?", [
+            "Carpeta física por mes y empresa", "Carpeta digital", "Correo electrónico",
+            "Sistema o plataforma", "Se imprime y se entrega para archivo", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
 }
 
 # ---------- Utilidades ----------
@@ -314,7 +513,6 @@ default_procedure = build_procedure(process, respondent, date_done, answers, val
 slug = safe_name(process)
 registro_id = f"tesoreria::{slug}"
 
-# Lógica de guardado
 if submitted:
     record = {
         "registro_id": registro_id,
