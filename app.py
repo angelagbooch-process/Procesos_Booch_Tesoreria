@@ -45,22 +45,23 @@ def get_worksheet():
         raise RuntimeError("Faltan dependencias: gspread y google-auth.")
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Falta [gcp_service_account] en Streamlit Secrets.")
+    
     creds = Credentials.from_service_account_info(
         dict(st.secrets["gcp_service_account"]),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"],
     )
     spreadsheet = gspread.authorize(creds).open_by_key(SHEET_ID)
+    
     try:
         ws = spreadsheet.worksheet(SHEET_NAME)
     except gspread.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=len(SHEET_HEADERS))
-    existing = ws.get_all_values()
-    if not existing:
+    
+    # Verificamos si la primera celda está vacía. Si lo está, escribimos los encabezados.
+    # Si ya tiene texto (los que pusiste manualmente), no hacemos nada y evitamos el error.
+    if not ws.cell(1, 1).value:
         ws.append_row(SHEET_HEADERS, value_input_option="RAW")
-    elif ws.row_values(1) != SHEET_HEADERS:
-        raise RuntimeError(
-            f"La pestaña '{SHEET_NAME}' tiene encabezados distintos. No se modificó."
-        )
+        
     return ws
 
 
