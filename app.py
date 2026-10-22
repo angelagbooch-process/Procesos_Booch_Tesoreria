@@ -1,17 +1,17 @@
-import streamlit as st
-from datetime import date, datetime, timezone
-from pathlib import Path
-import json
-import uuid
 import csv
 import io
+import json
+import uuid
+from datetime import date, datetime, timezone
+
+import streamlit as st
 
 try:
     import gspread
     from google.oauth2.service_account import Credentials
-    GOOGLE_SHEETS_AVAILABLE = True
-except Exception:
-    GOOGLE_SHEETS_AVAILABLE = False
+    SHEETS_OK = True
+except ImportError:
+    SHEETS_OK = False
 
 st.set_page_config(
     page_title="Levantamiento de funciones — Yorlenis",
@@ -21,7 +21,6 @@ st.set_page_config(
 
 st.title("Levantamiento y validación de funciones")
 st.caption("Piloto · Funciones de prioridad crítica · Respuestas → borrador de procedimiento → validación")
-
 st.info(
     "Complete las respuestas según cómo se trabaja actualmente. La aplicación genera un borrador "
     "para revisar; no supone que existan autorizaciones o controles que no se hayan confirmado."
@@ -29,14 +28,8 @@ st.info(
 
 NO_SE = "No estoy segura"
 OTRO = "Otro / Especificar"
-
-# ID no secreto de la hoja de control creada para el piloto.
-SPREADSHEET_ID = "1v8qaukYjo2JDWi_yqKBSZ5kWq0juqifhG7MZr1ii8Jc"
-WORKSHEET_NAME = "Respuestas Yorlenis"
-SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-
-if "submission_session_id" not in st.session_state:
-    st.session_state.submission_session_id = str(uuid.uuid4())
+SHEET_ID = "1v8qaukYjo2JDWi_yqKBSZ5kWq0juqifhG7MZr1ii8Jc"
+SHEET_NAME = "Respuestas Yorlenis"
 
 SHEET_HEADERS = [
     "registro_id", "fecha_guardado_utc", "fecha_levantamiento", "respondiente",
@@ -44,273 +37,457 @@ SHEET_HEADERS = [
     "frecuencia", "duracion", "procedimiento_borrador", "estado",
 ]
 
+# ---------- Google Sheets ----------
+
 @st.cache_resource(show_spinner=False)
-def get_google_worksheet():
-    """Conecta con Google Sheets usando los Secrets de Streamlit."""
-    if not GOOGLE_SHEETS_AVAILABLE:
-        raise RuntimeError("Faltan dependencias: gspread y google-auth. Revise requirements.txt.")
+def get_worksheet():
+    if not SHEETS_OK:
+        raise RuntimeError("Faltan dependencias: gspread y google-auth.")
     if "gcp_service_account" not in st.secrets:
-        raise RuntimeError("No se encuentra [gcp_service_account] en Streamlit Secrets.")
-    creds_info = dict(st.secrets["gcp_service_account"])
-    creds = Credentials.from_service_account_info(creds_info, scopes=SHEETS_SCOPES)
-    client = gspread.authorize(creds)
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        raise RuntimeError("Falta [gcp_service_account] en Streamlit Secrets.")
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    spreadsheet = gspread.authorize(creds).open_by_key(SHEET_ID)
     try:
-        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
+        ws = spreadsheet.worksheet(SHEET_NAME)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=len(SHEET_HEADERS))
-    if not worksheet.get_all_values():
-        worksheet.append_row(SHEET_HEADERS, value_input_option="RAW")
+        ws = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=len(SHEET_HEADERS))
+    existing = ws.get_all_values()
+    if not existing:
+        ws.append_row(SHEET_HEADERS, value_input_option="RAW")
+    elif ws.row_values(1) != SHEET_HEADERS:
+        raise RuntimeError(
+            f"La pestaña '{SHEET_NAME}' tiene encabezados distintos. No se modificó."
+        )
+    return ws
+
+
+def save_record(record):
+    ws = get_worksheet()
+    row = [record[h] for h in SHEET_HEADERS]
+    ids = ws.col_values(1)
+    if record["registro_id"] in ids:
+        n = ids.index(record["registro_id"]) + 1
+        try:
+            ws.update(f"A{n}:L{n}", [row], value_input_option="RAW")
+        except TypeError:  # gspread < 6
+            ws.update(f"A{n}:L{n}", [row], params={"valueInputOption": "RAW"})
     else:
-        first_row = worksheet.row_values(1)
-        if first_row != SHEET_HEADERS:
-            raise RuntimeError(
-                f"La pestaña '{WORKSHEET_NAME}' ya tiene contenido o encabezados diferentes. "
-                "No se modificó para proteger los datos existentes."
-            )
-    return worksheet
-
-def save_response_to_sheets(record):
-    """Inserta la respuesta o actualiza la misma función dentro de esta sesión."""
-    worksheet = get_google_worksheet()
-    existing_ids = worksheet.col_values(1)
-    registro_id = record["registro_id"]
-    if registro_id in existing_ids:
-        row_num = existing_ids.index(registro_id) + 1
-        worksheet.update(f"A{row_num}:L{row_num}", [record[header] for header in SHEET_HEADERS], value_input_option="RAW")
-    else:
-        worksheet.append_row([record[header] for header in SHEET_HEADERS], value_input_option="RAW")
+        ws.append_row(row, value_input_option="RAW")
 
 
-def question(label, options, key, multi=False, help_text=None):
-    if multi:
-        return st.multiselect(label, options, key=key, help=help_text)
-    return st.radio(label, options, key=key, horizontal=False, help=help_text)
+# ---------- Listas reutilizables ----------
 
-def text_input(label, key, placeholder="Escriba aquí si aplica"):
-    return st.text_input(label, key=key, placeholder=placeholder)
+AUTH = [
+    "Gerencia o jefe", "Asistente administrativo", "Contabilidad",
+    "Responsable del área solicitante", "Otra persona",
+    "No existe una autorización específica", NO_SE,
+]
+SOURCES = [
+    "Excel o listado entregado por otra persona", "Facturas y soportes",
+    "Información extraída de un sistema o portal", "Correo electrónico",
+    "Instrucciones del asistente administrativo", "Varias fuentes", OTRO,
+]
+BANCOS = [
+    "Banco A", "Banco B", "Banco C", "Banco D",
+    "Portal de ZOOM", "Portal de impuestos", "Portal de servicios",
+    OTRO, NO_SE,
+]
+CANALES = [
+    "Transferencia interbancaria desde portal del banco",
+    "Transferencia mismo banco",
+    "Pago masivo con archivo plano",
+    "Pago en efectivo en taquilla",
+    "Pago desde portal web del proveedor/servicio",
+    "Pago desde el portal de ZOOM",
+    OTRO, NO_SE,
+]
+FRECUENCIAS = [
+    "Diaria", "Semanal", "Quincenal", "Mensual",
+    "Solo cuando se requiere", "Varía según el tipo de pago", NO_SE,
+]
 
-def choices_for_process(process):
-    common_auth = [
-        "Gerencia o jefe", "Asistente administrativo", "Contabilidad",
-        "Responsable del área solicitante", "Otra persona",
-        "No existe una autorización específica", NO_SE
-    ]
-    common_sources = [
-        "Excel o listado entregado por otra persona", "Facturas y soportes",
-        "Información extraída de un sistema o portal", "Correo electrónico",
-        "Instrucciones del asistente administrativo", "Varias fuentes", OTRO
-    ]
-    if process == "ZOOM — pago de facturas y COD":
-        return [
-            ("¿Qué operaciones realiza usted?", [
-                "Pago de facturas mediante transferencia bancaria",
-                "Pago de COD desde el portal de ZOOM",
-                "Ambas operaciones", OTRO
-            ], True),
-            ("¿De dónde obtiene la información para realizar los pagos?", [
-                "Excel entregado por el asistente administrativo",
-                "Soportes de retenciones entregados por el asistente administrativo",
-                "Información consultada directamente en el portal de ZOOM",
-                OTRO
-            ], True),
-            ("¿Quién autoriza o confirma qué operaciones deben pagarse?", common_auth, False),
-            ("Después de pagar, ¿qué hace usted?", [
-                "Guarda o imprime el comprobante bancario",
-                "Adjunta los soportes en el portal de ZOOM",
-                "Verifica que los archivos queden registrados correctamente",
-                "Imprime o conserva facturas, retenciones o reportes COD",
-                OTRO
-            ], True),
-            ("¿Quién recibe o archiva los documentos físicos?", [
-                "El asistente administrativo", "Yorlenis", "Otra persona",
-                "No existe una persona definida", NO_SE
-            ], False),
-            ("Si falta un soporte o hay una diferencia, ¿qué hace?", [
-                "Solicita la información al asistente administrativo",
-                "Consulta a la persona que autorizó el pago",
-                "Resuelve la diferencia directamente con ZOOM",
-                "Otro procedimiento", "No existe un procedimiento definido", NO_SE
-            ], False),
-        ]
-    if process == "Consolidado semanal de proveedores":
-        return [
-            ("¿Qué información utiliza para preparar el consolidado?", common_sources, True),
-            ("¿Qué hace usted con esa información?", [
-                "Reúne los pagos pendientes en un solo listado",
-                "Revisa importes y datos de los proveedores",
-                "Organiza pagos por empresa, moneda o vencimiento",
-                "Calcula o modifica importes", OTRO
-            ], True),
-            ("¿Quién recibe el consolidado para su aprobación?", [
-                "Gerencia o jefe", "Asistente administrativo", "Contabilidad",
-                "Otra persona", "No se envía para aprobación", NO_SE
-            ], False),
-            ("¿Qué sucede después de enviar el consolidado?", [
-                "Recibo la aprobación y ejecuto los pagos",
-                "Otra persona ejecuta los pagos",
-                "Recibo cambios o instrucciones antes de pagar",
-                "No hago seguimiento", OTRO
-            ], False),
-            ("¿Cómo deja constancia del trabajo realizado?", [
-                "Archivo Excel", "Correo electrónico", "Comprobantes bancarios",
-                "Sistema o plataforma", "No existe un registro específico", OTRO
-            ], True),
-        ]
-    if process in ("Nómina quincenal — obreros y vigilantes",
-                   "Nómina quincenal — tiendas, condominio y empresas"):
-        groups = (process == "Nómina quincenal — tiendas, condominio y empresas")
-        qs = []
-        if groups:
-            qs.append(("¿Qué entidades o grupos incluye esta función?", [
-                "Personal de tiendas", "Personal de condominio", "Personal de Booch",
-                "Personal de Bufecorp", "Personal de Baringco", OTRO
-            ], True))
-        qs += [
-            ("¿Qué actividad realiza usted en el proceso?", [
-                "Recibo la nómina preparada y realizo los pagos",
-                "Reviso la información y preparo los pagos",
-                "Calculo o preparo la nómina", "Realizo todo el proceso", OTRO
-            ], False),
-            ("¿Quién le entrega o prepara la información?", [
-                "Asistente administrativo", "Recursos Humanos o responsable de personal",
-                "Contabilidad", "Gerencia o jefe", "Responsables de empresas o tiendas",
-                "Otra persona", NO_SE
-            ], True),
-            ("¿Quién revisa o autoriza los importes antes de pagar?", common_auth, False),
-            ("¿Cómo se realizan los pagos?", [
-                "Transferencias bancarias", "Pagos en efectivo",
-                "Una combinación de ambos", OTRO
-            ], False),
-            ("¿Qué comprobantes o registros conserva?", [
-                "Comprobantes bancarios", "Relación de pagos realizados",
-                "Nómina utilizada para el pago", "Recibos firmados", OTRO,
-                "No conservo un registro específico"
-            ], True),
-        ]
-        return qs
-    if process == "Pagos en línea — impuestos, condominios y servicios":
-        return [
-            ("¿Qué tipos de pagos realiza?", [
-                "Impuestos", "Condominios", "Servicios públicos", OTRO
-            ], True),
-            ("¿Cómo recibe los datos para efectuar el pago?", [
-                "Factura o recibo", "Instrucciones del asistente administrativo",
-                "Instrucciones de gerencia o jefe", "Correo electrónico",
-                "Consulta directamente el portal correspondiente", OTRO
-            ], True),
-            ("¿Quién autoriza que se realice el pago?", common_auth, False),
-            ("Después de pagar, ¿qué hace con el comprobante?", [
-                "Lo imprime", "Lo guarda digitalmente", "Lo envía por correo",
-                "Lo entrega al asistente administrativo", "Lo adjunta en un sistema o portal",
-                OTRO
-            ], True),
-            ("¿Cómo controla que no quede un pago pendiente o vencido?", [
-                "Utilizo un calendario o listado de vencimientos",
-                "Reviso las facturas o recibos recibidos",
-                "Recibo recordatorios de otra persona",
-                "No llevo un control específico", OTRO
-            ], True),
-        ]
-    if process == "Pagos de compras de materiales":
-        return [
-            ("¿Qué recibe antes de realizar un pago?", [
-                "Factura del proveedor", "Solicitud de pago", "Orden de compra",
-                "Aprobación de gerencia o jefe", "Instrucciones del asistente administrativo", OTRO
-            ], True),
-            ("¿Qué hace antes de pagar?", [
-                "Verifico el importe y los datos bancarios",
-                "Compruebo que la factura corresponda a la solicitud",
-                "Verifico que exista autorización",
-                "Recibo la instrucción y ejecuto el pago", OTRO
-            ], True),
-            ("¿Quién autoriza el pago?", common_auth, False),
-            ("¿Cómo realiza el pago?", [
-                "Transferencia bancaria", "Pago en efectivo", OTRO
-            ], False),
-            ("¿Qué hace con el comprobante?", [
-                "Lo envía al proveedor", "Lo envía al asistente administrativo",
-                "Lo archiva junto con la factura", "Lo guarda digitalmente",
-                "Realiza varias de estas acciones", OTRO
-            ], True),
-        ]
-    if process == "Recibos de pagos en divisas — Bufecorp y Booch":
-        return [
-            ("¿Qué hace exactamente en esta función?", [
-                "Preparo y emito recibos de pagos realizados",
-                "Registro pagos en un sistema",
-                "Verifico información para elaborar recibos",
-                "Recibo datos preparados por otra persona y genero los recibos", OTRO
-            ], True),
-            ("¿Qué información utiliza para elaborar el recibo?", [
-                "Comprobante de pago", "Factura o documento de cobro",
-                "Información entregada por el asistente administrativo",
-                "Información de un sistema", OTRO
-            ], True),
-            ("¿Quién entrega o confirma la información del pago?", [
-                "Asistente administrativo", "Gerencia o jefe", "Contabilidad",
-                "Otra persona", NO_SE
-            ], False),
-            ("¿Quién recibe el recibo una vez emitido?", [
-                "Proveedor o beneficiario", "Asistente administrativo", "Contabilidad",
-                "Gerencia o jefe", "Otra persona", NO_SE
-            ], True),
-            ("¿Dónde conserva el recibo y sus soportes?", [
-                "Carpeta física por mes y empresa", "Carpeta digital", "Correo electrónico",
-                "Sistema o plataforma", "Se imprime y se entrega para archivo", OTRO
-            ], True),
-        ]
-    return []
+# Bloque transversal para funciones con pago
+BLOQUE_BANCARIO = [
+    ("¿Desde qué banco(s) o portal(es) realiza los pagos de esta función?", BANCOS, True),
+    ("¿Qué canal usa con más frecuencia en cada banco/portal?", CANALES, True),
+    ("¿Con qué frecuencia paga desde cada banco/portal?", FRECUENCIAS, True),
+    ("¿Quién más tiene acceso o puede autorizar pagos en esas cuentas?", [
+        "Solo Yorlenis", "Yorlenis y el asistente administrativo",
+        "Yorlenis y gerencia", "Varias personas", NO_SE,
+    ], False),
+    ("Antes de pagar, ¿verifica que los datos bancarios del proveedor sean correctos?", [
+        "Siempre, contra factura o registro", "A veces", "Nunca",
+        "No aplica (pago a entidad fija)", NO_SE,
+    ], False),
+    ("¿Quién confirma que el pago se realizó correctamente?", [
+        "Yo misma reviso el comprobante", "Otra persona revisa",
+        "No se confirma formalmente", NO_SE,
+    ], False),
+    ("¿Existe un monto máximo que puede pagar sin autorización adicional?", [
+        "Sí (indicar monto aproximado en 'Otro')", "No", NO_SE,
+    ], False),
+    ("Si el pago no se puede ejecutar (fondos, error del portal, rechazo), ¿qué hace?", [
+        "Aviso a gerencia o asistente", "Reintento más tarde",
+        "Solicito instrucción", OTRO, NO_SE,
+    ], False),
+]
+
+# ---------- Definición de preguntas ----------
+
+QUESTIONS = {
+    "ZOOM — pago de facturas y COD": [
+        ("¿Qué operaciones realiza usted?", [
+            "Pago de facturas mediante transferencia bancaria",
+            "Pago de COD desde el portal de ZOOM",
+            "Ambas operaciones", OTRO,
+        ], True),
+        ("¿De dónde obtiene la información para realizar los pagos?", [
+            "Excel entregado por el asistente administrativo",
+            "Soportes de retenciones entregados por el asistente administrativo",
+            "Información consultada directamente en el portal de ZOOM", OTRO,
+        ], True),
+        ("¿Quién autoriza o confirma qué operaciones deben pagarse?", AUTH, False),
+        ("¿Los pagos COD se hacen desde el portal de ZOOM o desde un banco?", [
+            "Solo desde el portal de ZOOM", "Solo desde banco",
+            "Ambos según el caso", OTRO,
+        ], False),
+        ("¿Con qué frecuencia se generan pagos COD?", FRECUENCIAS, False),
+        ("Después de pagar, ¿qué hace usted?", [
+            "Guarda o imprime el comprobante bancario",
+            "Adjunta los soportes en el portal de ZOOM",
+            "Verifica que los archivos queden registrados correctamente",
+            "Imprime o conserva facturas, retenciones o reportes COD", OTRO,
+        ], True),
+        ("¿Quién recibe o archiva los documentos físicos?", [
+            "El asistente administrativo", "Yorlenis", "Otra persona",
+            "No existe una persona definida", NO_SE,
+        ], False),
+        ("Si falta un soporte o hay una diferencia, ¿qué hace?", [
+            "Solicita la información al asistente administrativo",
+            "Consulta a la persona que autorizó el pago",
+            "Resuelve la diferencia directamente con ZOOM",
+            "Otro procedimiento", "No existe un procedimiento definido", NO_SE,
+        ], False),
+    ] + BLOQUE_BANCARIO,
+
+    "Consolidado semanal de proveedores": [
+        ("¿Qué información utiliza para preparar el consolidado?", SOURCES, True),
+        ("¿Qué hace usted con esa información?", [
+            "Reúne los pagos pendientes en un solo listado",
+            "Revisa importes y datos de los proveedores",
+            "Organiza pagos por empresa, moneda o vencimiento",
+            "Calcula o modifica importes", OTRO,
+        ], True),
+        ("¿Quién recibe el consolidado para su aprobación?", [
+            "Gerencia o jefe", "Asistente administrativo", "Contabilidad",
+            "Otra persona", "No se envía para aprobación", NO_SE,
+        ], False),
+        ("¿Qué sucede después de enviar el consolidado?", [
+            "Recibo la aprobación y ejecuto los pagos",
+            "Otra persona ejecuta los pagos",
+            "Recibo cambios o instrucciones antes de pagar",
+            "No hago seguimiento", OTRO,
+        ], False),
+        ("¿El consolidado incluye fecha de vencimiento de cada pago?", [
+            "Sí, siempre", "A veces", "No", NO_SE,
+        ], False),
+        ("¿Los pagos se programan con anticipación o se pagan el día del vencimiento?", [
+            "Con días de anticipación", "El mismo día del vencimiento",
+            "Depende del proveedor", OTRO,
+        ], False),
+        ("¿Cómo deja constancia del trabajo realizado?", [
+            "Archivo Excel", "Correo electrónico", "Comprobantes bancarios",
+            "Sistema o plataforma", "No existe un registro específico", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Nómina quincenal — obreros y vigilantes": [
+        ("¿Qué actividad realiza usted en el proceso?", [
+            "Recibo la nómina preparada y realizo los pagos",
+            "Reviso la información y preparo los pagos",
+            "Calculo o preparo la nómina", "Realizo todo el proceso", OTRO,
+        ], False),
+        ("¿Quién le entrega o prepara la información?", [
+            "Asistente administrativo", "Recursos Humanos o responsable de personal",
+            "Contabilidad", "Gerencia o jefe", "Responsables de empresas o tiendas",
+            "Otra persona", NO_SE,
+        ], True),
+        ("¿Quién revisa o autoriza los importes antes de pagar?", AUTH, False),
+        ("¿Cómo se realizan los pagos?", [
+            "Transferencias bancarias", "Pagos en efectivo",
+            "Una combinación de ambos", OTRO,
+        ], False),
+        ("¿El pago de nómina se hace siempre por el mismo banco o cambia según el grupo?", [
+            "Siempre el mismo banco", "Cambia según el grupo/empresa",
+            "Varía mes a mes", NO_SE,
+        ], False),
+        ("¿Se usa archivo plano para cargar la nómina al banco? ¿Quién lo prepara?", [
+            "Sí, lo preparo yo", "Sí, lo prepara otra persona",
+            "No, se hace manual en el portal", NO_SE,
+        ], False),
+        ("Los pagos en efectivo, ¿quién los entrega físicamente y cómo se registra?", [
+            "Yo los entrego y firmo recibos", "Otra persona los entrega",
+            "No se maneja efectivo", OTRO,
+        ], False),
+        ("¿Qué comprobantes o registros conserva?", [
+            "Comprobantes bancarios", "Relación de pagos realizados",
+            "Nómina utilizada para el pago", "Recibos firmados", OTRO,
+            "No conservo un registro específico",
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Nómina quincenal — tiendas, condominio y empresas": [
+        ("¿Qué entidades o grupos incluye esta función?", [
+            "Personal de tiendas", "Personal de condominio", "Personal de Booch",
+            "Personal de Bufecorp", "Personal de Baringco", OTRO,
+        ], True),
+        ("¿Qué actividad realiza usted en el proceso?", [
+            "Recibo la nómina preparada y realizo los pagos",
+            "Reviso la información y preparo los pagos",
+            "Calculo o preparo la nómina", "Realizo todo el proceso", OTRO,
+        ], False),
+        ("¿Quién le entrega o prepara la información?", [
+            "Asistente administrativo", "Recursos Humanos o responsable de personal",
+            "Contabilidad", "Gerencia o jefe", "Responsables de empresas o tiendas",
+            "Otra persona", NO_SE,
+        ], True),
+        ("¿Quién revisa o autoriza los importes antes de pagar?", AUTH, False),
+        ("¿Cómo se realizan los pagos?", [
+            "Transferencias bancarias", "Pagos en efectivo",
+            "Una combinación de ambos", OTRO,
+        ], False),
+        ("¿El pago de nómina se hace siempre por el mismo banco o cambia según el grupo?", [
+            "Siempre el mismo banco", "Cambia según el grupo/empresa",
+            "Varía mes a mes", NO_SE,
+        ], False),
+        ("¿Se usa archivo plano para cargar la nómina al banco? ¿Quién lo prepara?", [
+            "Sí, lo preparo yo", "Sí, lo prepara otra persona",
+            "No, se hace manual en el portal", NO_SE,
+        ], False),
+        ("Los pagos en efectivo, ¿quién los entrega físicamente y cómo se registra?", [
+            "Yo los entrego y firmo recibos", "Otra persona los entrega",
+            "No se maneja efectivo", OTRO,
+        ], False),
+        ("¿Qué comprobantes o registros conserva?", [
+            "Comprobantes bancarios", "Relación de pagos realizados",
+            "Nómina utilizada para el pago", "Recibos firmados", OTRO,
+            "No conservo un registro específico",
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Pagos en línea — impuestos, condominios y servicios": [
+        ("¿Qué tipos de pagos realiza?", [
+            "Impuestos", "Condominios", "Servicios públicos", OTRO,
+        ], True),
+        ("¿Cómo recibe los datos para efectuar el pago?", [
+            "Factura o recibo", "Instrucciones del asistente administrativo",
+            "Instrucciones de gerencia o jefe", "Correo electrónico",
+            "Consulta directamente el portal correspondiente", OTRO,
+        ], True),
+        ("¿Quién autoriza que se realice el pago?", AUTH, False),
+        ("¿En qué portal o banco específico paga cada tipo? (impuestos / condominios / servicios)", [
+            "Portal de impuestos", "Portal del banco", "Portal del servicio",
+            "Transferencia desde banco", "Varía según el tipo", OTRO,
+        ], True),
+        ("¿Los vencimientos están calendarizados? ¿Quién mantiene ese calendario?", [
+            "Sí, yo lo mantengo", "Sí, otra persona lo mantiene",
+            "No hay calendario formal", NO_SE,
+        ], False),
+        ("Después de pagar, ¿qué hace con el comprobante?", [
+            "Lo imprime", "Lo guarda digitalmente", "Lo envía por correo",
+            "Lo entrega al asistente administrativo", "Lo adjunta en un sistema o portal", OTRO,
+        ], True),
+        ("¿Cómo controla que no quede un pago pendiente o vencido?", [
+            "Utilizo un calendario o listado de vencimientos",
+            "Reviso las facturas o recibos recibidos",
+            "Recibo recordatorios de otra persona",
+            "No llevo un control específico", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Pagos de compras de materiales": [
+        ("¿Qué recibe antes de realizar un pago?", [
+            "Factura del proveedor", "Solicitud de pago", "Orden de compra",
+            "Aprobación de gerencia o jefe", "Instrucciones del asistente administrativo", OTRO,
+        ], True),
+        ("¿Qué hace antes de pagar?", [
+            "Verifico el importe y los datos bancarios",
+            "Compruebo que la factura corresponda a la solicitud",
+            "Verifico que exista autorización",
+            "Recibo la instrucción y ejecuto el pago", OTRO,
+        ], True),
+        ("¿Quién autoriza el pago?", AUTH, False),
+        ("¿Cómo realiza el pago?", [
+            "Transferencia bancaria", "Pago en efectivo", OTRO,
+        ], False),
+        ("¿Se verifica la recepción de la mercancía antes de pagar?", [
+            "Sí, siempre", "A veces", "No, se paga contra factura",
+            "No, se paga contra orden de compra", NO_SE,
+        ], False),
+        ("¿Hay proveedores recurrentes? ¿Se les paga con la misma frecuencia?", [
+            "Sí, la mayoría son recurrentes", "No, son compras puntuales",
+            "Es variable", NO_SE,
+        ], False),
+        ("¿Qué hace con el comprobante?", [
+            "Lo envía al proveedor", "Lo envía al asistente administrativo",
+            "Lo archiva junto con la factura", "Lo guarda digitalmente",
+            "Realiza varias de estas acciones", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+
+    "Recibos de pagos en divisas — Bufecorp y Booch": [
+        ("¿Qué hace exactamente en esta función?", [
+            "Preparo y emito recibos de pagos realizados",
+            "Registro pagos en un sistema",
+            "Verifico información para elaborar recibos",
+            "Recibo datos preparados por otra persona y genero los recibos", OTRO,
+        ], True),
+        ("¿Qué información utiliza para elaborar el recibo?", [
+            "Comprobante de pago", "Factura o documento de cobro",
+            "Información entregada por el asistente administrativo",
+            "Información de un sistema", OTRO,
+        ], True),
+        ("¿Quién entrega o confirma la información del pago?", [
+            "Asistente administrativo", "Gerencia o jefe", "Contabilidad",
+            "Otra persona", NO_SE,
+        ], False),
+        ("¿Quién recibe el recibo una vez emitido?", [
+            "Proveedor o beneficiario", "Asistente administrativo", "Contabilidad",
+            "Gerencia o jefe", "Otra persona", NO_SE,
+        ], True),
+        ("¿Se verifica que el pago en divisa ingresó a la cuenta antes de emitir el recibo?", [
+            "Sí, siempre", "A veces", "No, se emite con el comprobante",
+            NO_SE,
+        ], False),
+        ("¿Los recibos se emiten desde un sistema específico? ¿Quién tiene acceso?", [
+            "Sí, solo yo tengo acceso", "Sí, varias personas tienen acceso",
+            "No, se hacen manualmente", OTRO,
+        ], False),
+        ("¿Dónde conserva el recibo y sus soportes?", [
+            "Carpeta física por mes y empresa", "Carpeta digital", "Correo electrónico",
+            "Sistema o plataforma", "Se imprime y se entrega para archivo", OTRO,
+        ], True),
+    ] + BLOQUE_BANCARIO,
+}
+
+# ---------- Utilidades ----------
 
 def fmt(value):
     if isinstance(value, list):
         return ", ".join(value) if value else "Sin respuesta"
-    return value if value else "Sin respuesta"
+    return str(value) if value not in (None, "") else "Sin respuesta"
 
-processes = [
-    "ZOOM — pago de facturas y COD",
-    "Consolidado semanal de proveedores",
-    "Nómina quincenal — obreros y vigilantes",
-    "Nómina quincenal — tiendas, condominio y empresas",
-    "Pagos en línea — impuestos, condominios y servicios",
-    "Pagos de compras de materiales",
-    "Recibos de pagos en divisas — Bufecorp y Booch",
-]
+
+def roles_from(answers):
+    """Roles detectados a partir de las opciones seleccionadas (no de texto libre)."""
+    selected = {str(v).strip().lower() for val in answers.values()
+                for v in (val if isinstance(val, list) else [val])}
+    roles = []
+    if "asistente administrativo" in selected:
+        roles.append("Asistente administrativo: entrega información o recibe documentación.")
+    if "gerencia o jefe" in selected:
+        roles.append("Gerencia o jefe: instruye o autoriza cuando así se indicó.")
+    if "contabilidad" in selected:
+        roles.append("Contabilidad: participa según la respuesta seleccionada.")
+    roles.append("Yorlenis: realiza las actividades seleccionadas.")
+    return roles
+
+
+def safe_name(process):
+    s = process.lower()
+    for a, b in [("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("ñ", "n")]:
+        s = s.replace(a, b)
+    return s.replace(" ", "_").replace("—", "").replace("/", "_")
+
+
+def build_procedure(process, respondent, date_done, answers, validation):
+    lines = [
+        f"PROCEDIMIENTO: {process}",
+        f"Responsable que responde: {respondent or 'Pendiente'}",
+        f"Fecha: {date_done.strftime('%d/%m/%Y')}",
+        "",
+        "OBJETIVO",
+        "Describir cómo se ejecuta actualmente esta función, de acuerdo con la información aportada.",
+        "",
+        "ENTRADAS Y ACTIVIDADES DECLARADAS",
+        *[f"- {k}: {fmt(v)}" for k, v in answers.items()],
+        "",
+        "ROLES IDENTIFICADOS",
+        *[f"- {r}" for r in roles_from(answers)],
+        "",
+        "INFORMACIÓN BANCARIA Y DE CONTROL",
+        *[f"- {k}: {fmt(v)}" for k, v in answers.items()
+          if any(x in k for x in ("banco", "portal", "canal", "frecuencia", "acceso",
+                                  "datos bancarios", "confirma", "monto máximo",
+                                  "no se puede ejecutar"))],
+        "",
+        f"FRECUENCIA GENERAL: {validation.get('frequency', 'Pendiente de confirmar')}",
+        f"DURACIÓN: {validation.get('duration', 'Pendiente de confirmar')}",
+        "",
+        "VALIDACIÓN DE LA RESPONSABLE",
+        f"Resultado: {validation.get('confirm', 'Pendiente de confirmar')}",
+        f"Correcciones: {validation.get('missing') or 'Pendiente de confirmar'}",
+        "",
+        "PENDIENTES",
+        "- Confirmar el orden real de los pasos.",
+        "- Confirmar quién revisa y quién autoriza, si corresponde.",
+        "- Confirmar dónde se guarda la evidencia y quién la recibe.",
+        "- Verificar que los bancos/portales declarados coinciden con los autorizados por la empresa.",
+    ]
+    return "\n".join(lines)
+
+
+def answers_csv(answers):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Pregunta", "Respuesta"])
+    for k, v in answers.items():
+        writer.writerow([k, fmt(v)])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+# ---------- Interfaz ----------
 
 with st.sidebar:
     st.header("Datos del levantamiento")
     respondent = st.text_input("Nombre de quien responde", value="Yorlenis")
     date_done = st.date_input("Fecha", value=date.today())
-    process = st.selectbox("Función a revisar", processes)
+    process = st.selectbox("Función a revisar", list(QUESTIONS.keys()))
     st.caption("Complete una función por vez. Puede volver a esta lista para revisar otra.")
 
 st.subheader(process)
 st.write("Seleccione las respuestas. En las preguntas que permiten varias opciones, puede marcar más de una.")
 
 answers = {}
-questions = choices_for_process(process)
-for i, (label, options, multi) in enumerate(questions, 1):
+for i, (label, options, multi) in enumerate(QUESTIONS[process], 1):
     with st.container(border=True):
-        answers[label] = question(
-            label, options, key=f"{process}_{i}", multi=multi
+        key = f"{process}_{i}"
+        answers[label] = (
+            st.multiselect(label, options, key=key)
+            if multi else
+            st.radio(label, options, key=key, horizontal=False)
         )
-        if OTRO in (answers[label] if isinstance(answers[label], list) else [answers[label]]):
-            answers[f"Detalle — {label}"] = text_input(
-                "Indique cuál", key=f"{process}_{i}_other"
+        selected = answers[label] if isinstance(answers[label], list) else [answers[label]]
+        if OTRO in selected:
+            answers[f"Detalle — {label}"] = st.text_input(
+                "Indique cuál", key=f"{key}_other", placeholder="Escriba aquí si aplica"
             )
 
 st.divider()
 st.subheader("Validación del procedimiento")
-st.caption("Estas respuestas permiten que Yorlenis revise el borrador generado y confirme si representa su trabajo real.")
+st.caption("Estas respuestas permiten revisar el borrador y confirmar si representa el trabajo real.")
 
 with st.form(f"validation_{process}"):
     confirm = st.radio(
-        "¿El borrador generado a partir de sus respuestas describe correctamente cómo trabaja actualmente?",
+        "¿El borrador describe correctamente cómo trabaja actualmente?",
         ["Sí, lo describe correctamente", "Parcialmente; necesita correcciones", "No, no representa mi trabajo"],
         index=0,
     )
     missing = st.text_area(
-        "¿Qué actividad, persona, documento o paso importante falta o debe corregirse? (opcional)",
+        "¿Qué actividad, persona, documento o paso falta o debe corregirse? (opcional)",
         placeholder="Escriba solo lo que falta o está incorrecto…",
         height=90,
     )
@@ -326,109 +503,69 @@ with st.form(f"validation_{process}"):
 
 if submitted:
     st.session_state[f"validated_{process}"] = {
-        "confirm": confirm, "missing": missing, "frequency": frequency, "duration": duration
+        "confirm": confirm, "missing": missing,
+        "frequency": frequency, "duration": duration,
     }
+    st.session_state.pop(f"procedure_text_{process}", None)
 
 validation = st.session_state.get(f"validated_{process}", {})
+
 st.divider()
 st.header("Borrador de procedimiento para revisar")
-
-def role_line(answer_values):
-    vals = []
-    for v in answer_values.values():
-        vals.extend(v if isinstance(v, list) else [v])
-    roles = []
-    if any("asistente administrativo" in str(v).lower() for v in vals):
-        roles.append("Asistente administrativo: entrega información o recibe documentación, según las respuestas seleccionadas.")
-    if any("gerencia" in str(v).lower() or "jefe" in str(v).lower() for v in vals):
-        roles.append("Gerencia o jefe: interviene en las instrucciones o autorizaciones cuando así se indicó.")
-    if any("contabilidad" in str(v).lower() for v in vals):
-        roles.append("Contabilidad: participa según la respuesta seleccionada.")
-    roles.append("Yorlenis: realiza las actividades seleccionadas en este formulario.")
-    return roles
-
 st.markdown(f"**Función:** {process}")
-st.markdown(f"**Responsable que responde:** {respondent or 'No indicado'}")
+st.markdown(f"**Responsable:** {respondent or 'No indicado'}")
 st.markdown(f"**Fecha:** {date_done.strftime('%d/%m/%Y')}")
-st.markdown(f"**Frecuencia declarada:** {validation.get('frequency', 'Pendiente de confirmar')}")
-st.markdown(f"**Duración declarada:** {validation.get('duration', 'Pendiente de confirmar')}")
+st.markdown(f"**Frecuencia general:** {validation.get('frequency', 'Pendiente de confirmar')}")
+st.markdown(f"**Duración:** {validation.get('duration', 'Pendiente de confirmar')}")
 
 st.markdown("### 1. Información y actividades declaradas")
 for label, value in answers.items():
     st.markdown(f"- **{label}** {fmt(value)}")
 
 st.markdown("### 2. Roles que aparecen en las respuestas")
-for role in role_line(answers):
+for role in roles_from(answers):
     st.markdown(f"- {role}")
 
 st.markdown("### 3. Secuencia preliminar")
 st.write(
-    "1. Recibir o consultar la información indicada en las respuestas. "
-    "2. Realizar las actividades seleccionadas para esta función. "
-    "3. Ejecutar las verificaciones, comunicaciones o registros que se hayan seleccionado. "
-    "4. Conservar o entregar los documentos según las respuestas."
+    "1. Recibir o consultar la información indicada. "
+    "2. Verificar datos bancarios del proveedor/beneficiario. "
+    "3. Seleccionar el banco/portal y canal correspondiente. "
+    "4. Ejecutar el pago según autorización. "
+    "5. Confirmar el comprobante y archivar la evidencia."
 )
-st.caption(
-    "La secuencia anterior es un esquema preliminar construido a partir de las respuestas; "
-    "no confirma pasos que no se hayan descrito. Antes de aprobarlo, ajuste el texto si el orden real es diferente."
-)
+st.caption("Esquema preliminar; ajuste el orden si el real es diferente.")
 
 if validation:
     st.markdown("### 4. Validación de Yorlenis")
     st.markdown(f"- **Resultado:** {validation.get('confirm', 'Pendiente')}")
-    st.markdown(f"- **Correcciones indicadas:** {validation.get('missing') or 'Ninguna indicada'}")
+    st.markdown(f"- **Correcciones:** {validation.get('missing') or 'Ninguna indicada'}")
 
 st.warning(
-    "Pendiente de validación del responsable: comprobar que el orden de los pasos sea correcto, "
-    "que los roles estén bien asignados y que no falten autorizaciones, verificaciones o documentos."
+    "Pendiente de validación del responsable: comprobar orden de pasos, roles asignados, "
+    "bancos/portales declarados y que no falten autorizaciones, verificaciones o documentos."
 )
 
-# Editable procedure text for review
-default_procedure = f"""PROCEDIMIENTO: {process}
-
-Responsable que responde: {respondent or 'Pendiente'}
-Fecha: {date_done.strftime('%d/%m/%Y')}
-
-OBJETIVO
-Describir cómo se ejecuta actualmente esta función, de acuerdo con la información aportada por quien la realiza.
-
-ENTRADAS Y ACTIVIDADES DECLARADAS
-""" + "\n".join([f"- {k}: {fmt(v)}" for k, v in answers.items()]) + f"""
-
-ROLES IDENTIFICADOS
-""" + "\n".join([f"- {r}" for r in role_line(answers)]) + f"""
-
-FRECUENCIA: {validation.get('frequency', 'Pendiente de confirmar')}
-DURACIÓN: {validation.get('duration', 'Pendiente de confirmar')}
-
-VALIDACIÓN DE LA RESPONSABLE
-Resultado: {validation.get('confirm', 'Pendiente de confirmar')}
-Correcciones: {validation.get('missing') or 'Pendiente de confirmar'}
-
-PENDIENTES
-- Confirmar el orden real de los pasos.
-- Confirmar quién revisa y quién autoriza, si corresponde.
-- Confirmar dónde se guarda la evidencia y quién la recibe.
-"""
+default_procedure = build_procedure(process, respondent, date_done, answers, validation)
 st.markdown("### 5. Texto editable para la validación final")
 procedure_text = st.text_area(
     "Revise y corrija el procedimiento antes de descargarlo",
     value=default_procedure,
-    height=360,
+    height=420,
     key=f"procedure_text_{process}",
 )
-safe_name = process.lower().replace(" ", "_").replace("—", "").replace("/", "_")
-registro_id = f"{st.session_state.submission_session_id}:{safe_name}"
+
+slug = safe_name(process)
+registro_id = f"{respondent.strip().lower()}::{slug}"
 
 if submitted:
-    answers_json = json.dumps(answers, ensure_ascii=False)
     record = {
         "registro_id": registro_id,
         "fecha_guardado_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "fecha_levantamiento": date_done.isoformat(),
         "respondiente": respondent.strip(),
         "funcion": process,
-        "respuestas_json": answers_json,
+        "respuestas_json": json.dumps(answers, ensure_ascii=False),
         "validacion_yorlenis": validation.get("confirm", "Pendiente"),
         "correcciones_yorlenis": validation.get("missing", ""),
         "frecuencia": validation.get("frequency", "Pendiente de confirmar"),
@@ -437,28 +574,37 @@ if submitted:
         "estado": "Pendiente de revisión de Angela",
     }
     try:
-        save_response_to_sheets(record)
-        st.success("Respuesta guardada en Google Sheets. Puede cerrar la aplicación sin perder este registro.")
+        save_record(record)
+        st.success("Respuesta guardada en Google Sheets.")
     except Exception as e:
-        st.error("No se pudo guardar la respuesta en Google Sheets. No cierre esta pantalla hasta copiar o descargar el procedimiento.")
-        st.caption(f"Detalle técnico: {type(e).__name__}: {e}")
+        st.session_state["pending_record"] = record
+        st.error("No se pudo guardar en Google Sheets. Descargue el procedimiento y avise a Angela.")
+        st.caption(f"Detalle: {type(e).__name__}: {e}")
+
+if "pending_record" in st.session_state:
+    if st.button("Reintentar guardado en Google Sheets"):
+        try:
+            save_record(st.session_state["pending_record"])
+            st.success("Registro pendiente guardado.")
+            del st.session_state["pending_record"]
+        except Exception as e:
+            st.error(f"Sigue fallando: {type(e).__name__}: {e}")
+
 st.download_button(
     "Descargar procedimiento en TXT",
     data=procedure_text.encode("utf-8"),
-    file_name=f"procedimiento_{safe_name}.txt",
+    file_name=f"procedimiento_{slug}.txt",
     mime="text/plain",
 )
 st.download_button(
     "Descargar respuestas en CSV",
-    data=("Pregunta,Respuesta\n" + "\n".join(
-        '"' + str(k).replace('"', '""') + '","' + fmt(v).replace('"', '""') + '"'
-        for k, v in answers.items()
-    )).encode("utf-8-sig"),
-    file_name=f"respuestas_{safe_name}.csv",
+    data=answers_csv(answers),
+    file_name=f"respuestas_{slug}.csv",
     mime="text/csv",
 )
 
 st.caption(
-    "Al pulsar «Generar / actualizar borrador», la aplicación intenta guardar las respuestas y el borrador en la pestaña "
-    f"«{WORKSHEET_NAME}» de la hoja de control. Si aparece un error de guardado, descargue el procedimiento y avise a Angela."
+    "Al pulsar «Generar / actualizar borrador» la aplicación intenta guardar en la pestaña "
+    f"«{SHEET_NAME}». Si el guardado falla, use el botón de reintento y descargue el TXT. "
+    "Editar el texto sin reenviar no actualiza la hoja."
 )
