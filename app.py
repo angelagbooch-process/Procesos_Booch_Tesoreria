@@ -1,6 +1,17 @@
 import streamlit as st
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+import json
+import uuid
+import csv
+import io
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GOOGLE_SHEETS_AVAILABLE = True
+except Exception:
+    GOOGLE_SHEETS_AVAILABLE = False
 
 st.set_page_config(
     page_title="Levantamiento de funciones — Yorlenis",
@@ -18,6 +29,58 @@ st.info(
 
 NO_SE = "No estoy segura"
 OTRO = "Otro / Especificar"
+
+# ID no secreto de la hoja de control creada para el piloto.
+SPREADSHEET_ID = "1v8qaukYjo2JDWi_yqKBSZ5kWq0juqifhG7MZr1ii8Jc"
+WORKSHEET_NAME = "Respuestas Yorlenis"
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+if "submission_session_id" not in st.session_state:
+    st.session_state.submission_session_id = str(uuid.uuid4())
+
+SHEET_HEADERS = [
+    "registro_id", "fecha_guardado_utc", "fecha_levantamiento", "respondiente",
+    "funcion", "respuestas_json", "validacion_yorlenis", "correcciones_yorlenis",
+    "frecuencia", "duracion", "procedimiento_borrador", "estado",
+]
+
+@st.cache_resource(show_spinner=False)
+def get_google_worksheet():
+    """Conecta con Google Sheets usando los Secrets de Streamlit."""
+    if not GOOGLE_SHEETS_AVAILABLE:
+        raise RuntimeError("Faltan dependencias: gspread y google-auth. Revise requirements.txt.")
+    if "gcp_service_account" not in st.secrets:
+        raise RuntimeError("No se encuentra [gcp_service_account] en Streamlit Secrets.")
+    creds_info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(creds_info, scopes=SHEETS_SCOPES)
+    client = gspread.authorize(creds)
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    try:
+        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
+    except gspread.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=len(SHEET_HEADERS))
+    if not worksheet.get_all_values():
+        worksheet.append_row(SHEET_HEADERS, value_input_option="RAW")
+    else:
+        first_row = worksheet.row_values(1)
+        if first_row != SHEET_HEADERS:
+            raise RuntimeError(
+                f"La pestaña '{WORKSHEET_NAME}' ya tiene contenido o encabezados diferentes. "
+                "No se modificó para proteger los datos existentes."
+            )
+    return worksheet
+
+def save_response_to_sheets(record):
+    """Inserta la respuesta o actualiza la misma función dentro de esta sesión."""
+    worksheet = get_google_worksheet()
+    existing_ids = worksheet.col_values(1)
+    registro_id = record["registro_id"]
+    if registro_id in existing_ids:
+        row_num = existing_ids.index(registro_id) + 1
+        worksheet.update(f"A{row_num}:L{row_num}", [record[header] for header in SHEET_HEADERS], value_input_option="RAW")
+    else:
+        worksheet.append_row([record[header] for header in SHEET_HEADERS], value_input_option="RAW")
+
 
 def question(label, options, key, multi=False, help_text=None):
     if multi:
@@ -355,6 +418,30 @@ procedure_text = st.text_area(
     key=f"procedure_text_{process}",
 )
 safe_name = process.lower().replace(" ", "_").replace("—", "").replace("/", "_")
+registro_id = f"{st.session_state.submission_session_id}:{safe_name}"
+
+if submitted:
+    answers_json = json.dumps(answers, ensure_ascii=False)
+    record = {
+        "registro_id": registro_id,
+        "fecha_guardado_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "fecha_levantamiento": date_done.isoformat(),
+        "respondiente": respondent.strip(),
+        "funcion": process,
+        "respuestas_json": answers_json,
+        "validacion_yorlenis": validation.get("confirm", "Pendiente"),
+        "correcciones_yorlenis": validation.get("missing", ""),
+        "frecuencia": validation.get("frequency", "Pendiente de confirmar"),
+        "duracion": validation.get("duration", "Pendiente de confirmar"),
+        "procedimiento_borrador": procedure_text,
+        "estado": "Pendiente de revisión de Angela",
+    }
+    try:
+        save_response_to_sheets(record)
+        st.success("Respuesta guardada en Google Sheets. Puede cerrar la aplicación sin perder este registro.")
+    except Exception as e:
+        st.error("No se pudo guardar la respuesta en Google Sheets. No cierre esta pantalla hasta copiar o descargar el procedimiento.")
+        st.caption(f"Detalle técnico: {type(e).__name__}: {e}")
 st.download_button(
     "Descargar procedimiento en TXT",
     data=procedure_text.encode("utf-8"),
@@ -372,6 +459,6 @@ st.download_button(
 )
 
 st.caption(
-    "Piloto local: las respuestas permanecen en la sesión de Streamlit y no se guardan automáticamente en una base de datos. "
-    "Descargue los archivos antes de cerrar o reiniciar la aplicación."
+    "Al pulsar «Generar / actualizar borrador», la aplicación intenta guardar las respuestas y el borrador en la pestaña "
+    f"«{WORKSHEET_NAME}» de la hoja de control. Si aparece un error de guardado, descargue el procedimiento y avise a Angela."
 )
